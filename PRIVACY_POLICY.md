@@ -36,7 +36,7 @@ FullSnap requests the following browser permissions:
 
 ## Contact
 
-If you have questions about this privacy policy, please open an issue on our [GitHub repository](https://github.com/nelagueye/fullsnap).
+If you have questions about this privacy policy, please open an issue on our [GitHub repository](https://github.com/nelakay/fullsnap).
 
 ## Changes
 

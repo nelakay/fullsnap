@@ -22,4 +22,4 @@ PERMISSIONS EXPLAINED:
 • scripting — to scroll the page during capture
 • storage — to temporarily hold screenshot segments (cleared after stitching)
 
-Open source: https://github.com/nelagueye/fullsnap
+Open source: https://github.com/nelakay/fullsnap

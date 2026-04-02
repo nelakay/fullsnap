@@ -1,25 +1,48 @@
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.action === 'startCapture') {
-    handleCapture(sender.tab.id, message.pageInfo).then(() => {
-      sendResponse({ done: true });
+// Clicking the extension icon directly starts capture (no popup)
+chrome.action.onClicked.addListener(async (tab) => {
+  try {
+    if (!tab || !tab.url || tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://') ||
+        tab.url.startsWith('https://chromewebstore.google.com') || tab.url.startsWith('about:')) {
+      return;
+    }
+
+    // Gather page info directly via scripting
+    const [pageInfoResult] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => ({
+        viewportHeight: window.innerHeight,
+        viewportWidth: window.innerWidth,
+        dpr: window.devicePixelRatio || 1,
+        originalScrollX: window.scrollX,
+        originalScrollY: window.scrollY
+      })
     });
-    return true;
+
+    await handleCapture(tab.id, pageInfoResult.result);
+  } catch (err) {
+    console.error('FullSnap capture failed:', err);
   }
 });
 
 async function handleCapture(tabId, pageInfo) {
   const { viewportHeight, viewportWidth, dpr } = pageInfo;
 
+  // Clear any stale data from previous captures
+  const oldData = await chrome.storage.local.get('captureMetadata');
+  if (oldData.captureMetadata) {
+    await chrome.storage.local.remove([...oldData.captureMetadata.segmentKeys, 'captureMetadata']);
+  }
+
   // Scroll to top first
   await scrollTab(tabId, 0);
-  await sleep(300);
+  await sleep(500);
 
-  // Hide fixed/sticky elements BEFORE any captures to ensure consistent layout
+  // Hide fixed/sticky elements BEFORE any captures
   await chrome.scripting.executeScript({
     target: { tabId },
     func: hideFixedElements
   });
-  await sleep(300);
+  await sleep(500);
 
   // Capture first viewport
   const first = await captureTab();
@@ -27,7 +50,7 @@ async function handleCapture(tabId, pageInfo) {
   await chrome.storage.local.set({ segment_0: { dataUrl: first, y: 0 } });
   let segmentCount = 1;
 
-  // Scroll-until-stuck: keep scrolling by viewport height until we can't go further
+  // Scroll-until-stuck
   let previousScrollY = 0;
   let targetScrollY = viewportHeight;
 
@@ -39,10 +62,9 @@ async function handleCapture(tabId, pageInfo) {
     });
     const actualY = result.result;
 
-    // If we didn't move at all, we've hit the bottom
     if (actualY <= previousScrollY) break;
 
-    await sleep(400);
+    await sleep(600);
     const capture = await captureTab();
 
     const key = `segment_${segmentCount}`;
@@ -54,7 +76,7 @@ async function handleCapture(tabId, pageInfo) {
     targetScrollY = actualY + viewportHeight;
   }
 
-  // Get the final full height after all dynamic content has loaded
+  // Get the final full height
   const [heightResult] = await chrome.scripting.executeScript({
     target: { tabId },
     func: () => Math.max(
@@ -77,7 +99,7 @@ async function handleCapture(tabId, pageInfo) {
       func: (targetY) => { window.scrollTo(0, targetY); return window.scrollY; },
       args: [maxScrollY]
     });
-    await sleep(400);
+    await sleep(600);
     const capture = await captureTab();
 
     const key = `segment_${segmentCount}`;
@@ -111,12 +133,20 @@ async function handleCapture(tabId, pageInfo) {
   chrome.tabs.create({ url: chrome.runtime.getURL('editor.html') });
 }
 
-function captureTab() {
-  return new Promise((resolve) => {
-    chrome.tabs.captureVisibleTab(null, { format: 'png' }, (dataUrl) => {
-      resolve(dataUrl);
-    });
-  });
+async function captureTab() {
+  // Retry with backoff to handle MAX_CAPTURE_VISIBLE_TAB_CALLS_PER_SECOND quota
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      const dataUrl = await chrome.tabs.captureVisibleTab(null, { format: 'png' });
+      return dataUrl;
+    } catch (err) {
+      if (err.message && err.message.includes('MAX_CAPTURE') && attempt < 4) {
+        await sleep(1000);
+        continue;
+      }
+      throw err;
+    }
+  }
 }
 
 function scrollTab(tabId, y) {

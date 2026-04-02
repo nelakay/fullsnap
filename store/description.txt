@@ -1,0 +1,25 @@
+Capture full-page screenshots with free cropping and PDF export — no subscription required.
+
+FullSnap scrolls through any webpage, captures each section, and stitches them into a single seamless screenshot. Then edit, crop, and export — all for free.
+
+FEATURES:
+• Full page capture — works on any webpage, handles lazy-loaded content
+• Crop tool — select exactly the area you need with draggable handles
+• Save as PNG — full resolution, one click
+• Save as PDF — automatically paginated for A4 printing
+• Copy to clipboard — paste into Google Docs, Slack, email, or anywhere
+• Zoom controls — fit to screen or zoom into details
+• Clean, dark editor UI
+
+100% FREE:
+No premium tier. No subscription. No feature gates. Everything is included.
+
+PRIVACY FIRST:
+FullSnap processes everything locally in your browser. No data is ever collected, transmitted, or stored on any server. Your screenshots never leave your computer.
+
+PERMISSIONS EXPLAINED:
+• activeTab — to capture the current tab's visible content
+• scripting — to scroll the page during capture
+• storage — to temporarily hold screenshot segments (cleared after stitching)
+
+Open source: https://github.com/nelagueye/fullsnap

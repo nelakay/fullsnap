@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>FullSnap - Editor</title>
+  <link rel="stylesheet" href="editor.css">
+</head>
+<body>
+  <div class="toolbar">
+    <div class="toolbar-left">
+      <h1>FullSnap</h1>
+    </div>
+    <div class="toolbar-center">
+      <button id="cropBtn" class="tool-btn" title="Crop">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M6 2v4H2v2h4v10h10v4h2v-4h4v-2H8V6h10v10"/>
+          <path d="M18 2v4"/>
+        </svg>
+        Crop
+      </button>
+      <button id="resetCropBtn" class="tool-btn" title="Reset Crop" style="display:none;">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+          <path d="M3 3v5h5"/>
+        </svg>
+        Reset
+      </button>
+      <div class="separator"></div>
+      <button id="downloadPng" class="tool-btn" title="Download PNG">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+          <polyline points="7 10 12 15 17 10"/>
+          <line x1="12" y1="15" x2="12" y2="3"/>
+        </svg>
+        PNG
+      </button>
+      <button id="downloadPdf" class="tool-btn" title="Download PDF">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+          <polyline points="14 2 14 8 20 8"/>
+          <line x1="16" y1="13" x2="8" y2="13"/>
+          <line x1="16" y1="17" x2="8" y2="17"/>
+        </svg>
+        PDF
+      </button>
+      <button id="copyBtn" class="tool-btn" title="Copy to Clipboard">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+        </svg>
+        Copy
+      </button>
+    </div>
+    <div class="toolbar-right">
+      <div class="zoom-controls">
+        <button id="zoomOut" class="tool-btn zoom-btn" title="Zoom Out">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="8" y1="11" x2="14" y2="11"/>
+          </svg>
+        </button>
+        <span id="zoomLevel" class="zoom-level">100%</span>
+        <button id="zoomIn" class="tool-btn zoom-btn" title="Zoom In">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/>
+          </svg>
+        </button>
+        <button id="zoomFit" class="tool-btn zoom-btn" title="Fit to Screen">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/>
+          </svg>
+          Fit
+        </button>
+      </div>
+      <div class="separator"></div>
+      <span id="dimensions" class="dimensions"></span>
+    </div>
+  </div>
+
+  <div class="editor-area" id="editorArea">
+    <canvas id="canvas"></canvas>
+    <div id="cropOverlay" class="crop-overlay" style="display:none;">
+      <div class="crop-selection" id="cropSelection">
+        <div class="crop-handle nw" data-handle="nw"></div>
+        <div class="crop-handle ne" data-handle="ne"></div>
+        <div class="crop-handle sw" data-handle="sw"></div>
+        <div class="crop-handle se" data-handle="se"></div>
+        <div class="crop-handle n" data-handle="n"></div>
+        <div class="crop-handle s" data-handle="s"></div>
+        <div class="crop-handle e" data-handle="e"></div>
+        <div class="crop-handle w" data-handle="w"></div>
+      </div>
+    </div>
+  </div>
+
+  <div id="cropActions" class="crop-actions" style="display:none;">
+    <button id="applyCrop" class="crop-apply">Apply Crop</button>
+    <button id="cancelCrop" class="crop-cancel">Cancel</button>
+  </div>
+
+  <script src="lib/jspdf.umd.min.js"></script>
+  <script src="editor.js"></script>
+</body>
+</html>

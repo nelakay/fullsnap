@@ -1,28 +1,36 @@
 (() => {
-  const canvas = document.getElementById('canvas');
-  const ctx = canvas.getContext('2d');
   const editorArea = document.getElementById('editorArea');
   const cropOverlay = document.getElementById('cropOverlay');
   const cropSelection = document.getElementById('cropSelection');
   const dimensionsEl = document.getElementById('dimensions');
   const zoomLevelEl = document.getElementById('zoomLevel');
 
-  let originalImage = null;
-  let isCropping = false;
-  let zoom = 1; // 1 = full width of editor area
+  let tiles = [];         // array of { canvas, y, height } — each tile is its own canvas
+  let fullWidth = 0;
+  let fullHeight = 0;     // total pixel height across all tiles
+  let originalTilesData = null; // for reset after crop
 
-  let crop = { x: 0, y: 0, w: 0, h: 0 }; // in displayed px relative to canvas
+  let isCropping = false;
+  let zoom = 1;
+  let crop = { x: 0, y: 0, w: 0, h: 0 };
   let dragState = null;
 
+  const MAX_TILE_HEIGHT = 16000; // safe per-canvas limit
+
   // ---- Zoom ----
-  // zoom=1 means the canvas display width fills the editor area width.
   function applyZoom() {
-    const areaWidth = editorArea.clientWidth - 40; // minus padding
+    const areaWidth = editorArea.clientWidth - 40;
     const displayWidth = areaWidth * zoom;
-    const aspect = canvas.height / canvas.width;
-    const displayHeight = displayWidth * aspect;
-    canvas.style.width = displayWidth + 'px';
-    canvas.style.height = displayHeight + 'px';
+    const displayScale = displayWidth / fullWidth;
+
+    const container = document.getElementById('tilesContainer');
+    container.style.width = displayWidth + 'px';
+
+    for (const tile of tiles) {
+      const h = tile.canvas.height * displayScale;
+      tile.canvas.style.width = displayWidth + 'px';
+      tile.canvas.style.height = h + 'px';
+    }
     zoomLevelEl.textContent = Math.round(zoom * 100) + '%';
   }
 
@@ -34,67 +42,124 @@
   document.getElementById('zoomIn').addEventListener('click', () => setZoom(zoom + 0.1));
   document.getElementById('zoomOut').addEventListener('click', () => setZoom(zoom - 0.1));
   document.getElementById('zoomFit').addEventListener('click', () => setZoom(1));
-
-  // Reapply zoom on window resize
   window.addEventListener('resize', () => { if (!isCropping) applyZoom(); });
 
-  // ---- Load & Stitch ----
+  // ---- Load & Stitch into tiles ----
   async function loadAndStitch() {
     const { captureMetadata } = await chrome.storage.local.get('captureMetadata');
     if (!captureMetadata) return;
 
-    const { segmentKeys, fullHeight, viewportWidth, dpr } = captureMetadata;
-    const canvasWidth = viewportWidth * dpr;
-    const canvasHeight = fullHeight * dpr;
+    const { segmentKeys, fullHeight: pageHeight, viewportWidth, dpr } = captureMetadata;
 
-    const MAX_CANVAS_DIM = 32767;
-    if (canvasHeight > MAX_CANVAS_DIM) {
-      document.body.innerHTML = '<p style="color:#fff;padding:40px;">Page is too tall to capture. Try a shorter page.</p>';
-      return;
-    }
+    fullWidth = Math.round(viewportWidth * dpr);
+    const totalHeight = Math.round(pageHeight * dpr);
 
-    canvas.width = canvasWidth;
-    canvas.height = canvasHeight;
-
+    // Load all captured segments
     const segments = [];
     for (const key of segmentKeys) {
       const data = await chrome.storage.local.get(key);
       const segment = data[key];
       if (!segment) continue;
       const img = await loadImage(segment.dataUrl);
-      segments.push({ img, y: segment.y * dpr });
+      segments.push({ img, y: Math.round(segment.y * dpr) });
     }
 
-    if (segments.length > 0) {
-      ctx.drawImage(segments[0].img, 0, 0);
+    // Create a flat pixel map by drawing segments into tiles
+    // First, figure out how many tiles we need
+    const numTiles = Math.ceil(totalHeight / MAX_TILE_HEIGHT);
+    tiles = [];
+
+    // Create the container for tile canvases
+    let container = document.getElementById('tilesContainer');
+    if (!container) {
+      container = document.createElement('div');
+      container.id = 'tilesContainer';
+      container.style.cssText = 'display:flex;flex-direction:column;align-items:center;';
+      editorArea.prepend(container);
+    }
+    container.innerHTML = '';
+
+    // Remove the original single canvas from DOM if present
+    const oldCanvas = document.getElementById('canvas');
+    if (oldCanvas) oldCanvas.style.display = 'none';
+
+    for (let t = 0; t < numTiles; t++) {
+      const tileY = t * MAX_TILE_HEIGHT;
+      const tileH = Math.min(MAX_TILE_HEIGHT, totalHeight - tileY);
+
+      const c = document.createElement('canvas');
+      c.width = fullWidth;
+      c.height = tileH;
+      c.style.display = 'block';
+      c.style.boxShadow = t === 0 ? '0 -2px 30px rgba(0,0,0,0.5)' : 'none';
+      if (t === numTiles - 1) c.style.boxShadow = '0 2px 30px rgba(0,0,0,0.5)';
+      container.appendChild(c);
+
+      const tileCtx = c.getContext('2d');
+
+      // Draw relevant segments onto this tile
+      for (let i = 0; i < segments.length; i++) {
+        const seg = segments[i];
+        const segTop = seg.y;
+        const segBottom = seg.y + seg.img.height;
+        const tileBottom = tileY + tileH;
+
+        // Does this segment overlap this tile?
+        if (segBottom <= tileY || segTop >= tileBottom) continue;
+
+        // Calculate what portion of the segment to draw
+        let srcY = 0, srcH = seg.img.height;
+        let destY = segTop - tileY;
+
+        // Handle overlap with previous segment
+        if (i > 0) {
+          const prev = segments[i - 1];
+          const prevBottom = prev.y + prev.img.height;
+          const overlapWithPrev = Math.max(0, prevBottom - seg.y);
+          if (overlapWithPrev > 0) {
+            srcY = overlapWithPrev;
+            srcH -= overlapWithPrev;
+            destY += overlapWithPrev;
+          }
+        }
+
+        // Clip to tile bounds
+        if (destY < 0) {
+          srcY += (-destY);
+          srcH -= (-destY);
+          destY = 0;
+        }
+        if (destY + srcH > tileH) {
+          srcH = tileH - destY;
+        }
+        if (srcH <= 0) continue;
+
+        tileCtx.drawImage(seg.img, 0, srcY, seg.img.width, srcH,
+                          0, destY, fullWidth, srcH);
+      }
+
+      tiles.push({ canvas: c, y: tileY, height: tileH });
     }
 
-    for (let i = 1; i < segments.length; i++) {
-      const prev = segments[i - 1];
-      const curr = segments[i];
-      const prevBottom = prev.y + prev.img.height;
-      const overlap = Math.max(0, prevBottom - curr.y);
-      if (overlap >= curr.img.height) continue;
-      const srcY = overlap;
-      const srcH = curr.img.height - overlap;
-      const destY = curr.y + overlap;
-      const drawH = Math.min(srcH, canvasHeight - destY);
-      if (drawH <= 0) continue;
-      ctx.drawImage(curr.img, 0, srcY, curr.img.width, drawH, 0, destY, curr.img.width, drawH);
-    }
-
-    const finalImg = new Image();
-    finalImg.onload = () => {
-      originalImage = finalImg;
-      updateDimensions();
-      setZoom(1); // 100% = full width
-    };
-    finalImg.src = canvas.toDataURL('image/png');
+    fullHeight = totalHeight;
+    saveTilesAsOriginal();
+    updateDimensions();
+    setZoom(1);
 
     await chrome.storage.local.remove([...segmentKeys, 'captureMetadata']);
   }
 
   loadAndStitch();
+
+  function saveTilesAsOriginal() {
+    originalTilesData = tiles.map(t => {
+      const c = document.createElement('canvas');
+      c.width = t.canvas.width;
+      c.height = t.canvas.height;
+      c.getContext('2d').drawImage(t.canvas, 0, 0);
+      return { canvas: c, y: t.y, height: t.height };
+    });
+  }
 
   function loadImage(src) {
     return new Promise((resolve, reject) => {
@@ -106,22 +171,40 @@
   }
 
   function updateDimensions() {
-    dimensionsEl.textContent = `${canvas.width} x ${canvas.height}`;
+    dimensionsEl.textContent = `${fullWidth} x ${fullHeight}`;
   }
 
-  // ---- Helpers to get canvas display rect ----
-  function getCanvasDisplaySize() {
-    const rect = canvas.getBoundingClientRect();
-    return { width: rect.width, height: rect.height };
+  // ---- Helper: render all tiles into a temporary canvas for export ----
+  // For very tall images, we render in slices to avoid hitting limits
+  function renderToBlob(format, quality) {
+    return new Promise((resolve) => {
+      // If it fits in one canvas, render directly
+      if (fullHeight <= 16000) {
+        const c = document.createElement('canvas');
+        c.width = fullWidth;
+        c.height = fullHeight;
+        const ctx = c.getContext('2d');
+        let y = 0;
+        for (const tile of tiles) {
+          ctx.drawImage(tile.canvas, 0, y);
+          y += tile.canvas.height;
+        }
+        c.toBlob(blob => resolve({ blob, canvas: c }), format, quality);
+      } else {
+        // For very tall images, we can't make a single canvas.
+        // Return tiles array for slice-based export.
+        resolve({ blob: null, tiles, fullWidth, fullHeight });
+      }
+    });
   }
 
-  function getCanvasOffset() {
-    const canvasRect = canvas.getBoundingClientRect();
-    const areaRect = editorArea.getBoundingClientRect();
-    return {
-      x: canvasRect.left - areaRect.left + editorArea.scrollLeft,
-      y: canvasRect.top - areaRect.top + editorArea.scrollTop
-    };
+  // ---- Get total display size ----
+  function getTotalDisplaySize() {
+    if (tiles.length === 0) return { width: 0, height: 0 };
+    const areaWidth = editorArea.clientWidth - 40;
+    const displayWidth = areaWidth * zoom;
+    const displayScale = displayWidth / fullWidth;
+    return { width: displayWidth, height: fullHeight * displayScale };
   }
 
   // ---- Crop Mode ----
@@ -131,10 +214,20 @@
   });
 
   document.getElementById('resetCropBtn').addEventListener('click', () => {
-    if (!originalImage) return;
-    canvas.width = originalImage.width;
-    canvas.height = originalImage.height;
-    ctx.drawImage(originalImage, 0, 0);
+    if (!originalTilesData) return;
+    const container = document.getElementById('tilesContainer');
+    container.innerHTML = '';
+    tiles = originalTilesData.map(t => {
+      const c = document.createElement('canvas');
+      c.width = t.canvas.width;
+      c.height = t.canvas.height;
+      c.style.display = 'block';
+      c.getContext('2d').drawImage(t.canvas, 0, 0);
+      container.appendChild(c);
+      return { canvas: c, y: t.y, height: t.height };
+    });
+    fullWidth = tiles[0].canvas.width;
+    fullHeight = originalTilesData.reduce((sum, t) => sum + t.height, 0);
     updateDimensions();
     applyZoom();
     document.getElementById('resetCropBtn').style.display = 'none';
@@ -150,8 +243,7 @@
     cropOverlay.classList.add('active');
     document.getElementById('cropActions').style.display = 'flex';
 
-    // Start with full image selected
-    const display = getCanvasDisplaySize();
+    const display = getTotalDisplaySize();
     crop = { x: 0, y: 0, w: display.width, h: display.height };
     updateCropSelection();
     setupCropListeners();
@@ -167,9 +259,9 @@
   }
 
   function applyCrop() {
-    const display = getCanvasDisplaySize();
-    const scaleX = canvas.width / display.width;
-    const scaleY = canvas.height / display.height;
+    const display = getTotalDisplaySize();
+    const scaleX = fullWidth / display.width;
+    const scaleY = fullHeight / display.height;
 
     const sx = Math.round(crop.x * scaleX);
     const sy = Math.round(crop.y * scaleY);
@@ -178,10 +270,50 @@
 
     if (sw < 1 || sh < 1) return;
 
-    const imageData = ctx.getImageData(sx, sy, sw, sh);
-    canvas.width = sw;
-    canvas.height = sh;
-    ctx.putImageData(imageData, 0, 0);
+    // Extract cropped region across tiles into new tiles
+    const newNumTiles = Math.ceil(sh / MAX_TILE_HEIGHT);
+    const newTiles = [];
+    const container = document.getElementById('tilesContainer');
+    container.innerHTML = '';
+
+    for (let t = 0; t < newNumTiles; t++) {
+      const newTileY = t * MAX_TILE_HEIGHT;
+      const newTileH = Math.min(MAX_TILE_HEIGHT, sh - newTileY);
+
+      const c = document.createElement('canvas');
+      c.width = sw;
+      c.height = newTileH;
+      c.style.display = 'block';
+      container.appendChild(c);
+      const ctx = c.getContext('2d');
+
+      // The region we need from the source: sy + newTileY to sy + newTileY + newTileH
+      const needTop = sy + newTileY;
+      const needBottom = needTop + newTileH;
+
+      for (const tile of tiles) {
+        const tileTop = tile.y;
+        const tileBottom = tile.y + tile.canvas.height;
+
+        if (tileBottom <= needTop || tileTop >= needBottom) continue;
+
+        const overlapTop = Math.max(needTop, tileTop);
+        const overlapBottom = Math.min(needBottom, tileBottom);
+        const srcTileY = overlapTop - tileTop;
+        const srcTileH = overlapBottom - overlapTop;
+        const destTileY = overlapTop - needTop;
+
+        ctx.drawImage(tile.canvas,
+          sx, srcTileY, sw, srcTileH,
+          0, destTileY, sw, srcTileH);
+      }
+
+      newTiles.push({ canvas: c, y: newTileY, height: newTileH });
+    }
+
+    tiles = newTiles;
+    fullWidth = sw;
+    fullHeight = sh;
     updateDimensions();
     applyZoom();
 
@@ -190,9 +322,14 @@
   }
 
   function updateCropSelection() {
-    const offset = getCanvasOffset();
-    cropSelection.style.left = (offset.x + crop.x) + 'px';
-    cropSelection.style.top = (offset.y + crop.y) + 'px';
+    const container = document.getElementById('tilesContainer');
+    const containerRect = container.getBoundingClientRect();
+    const areaRect = editorArea.getBoundingClientRect();
+    const offsetX = containerRect.left - areaRect.left + editorArea.scrollLeft;
+    const offsetY = containerRect.top - areaRect.top + editorArea.scrollTop;
+
+    cropSelection.style.left = (offsetX + crop.x) + 'px';
+    cropSelection.style.top = (offsetY + crop.y) + 'px';
     cropSelection.style.width = crop.w + 'px';
     cropSelection.style.height = crop.h + 'px';
   }
@@ -225,14 +362,13 @@
     const dx = mouse.x - dragState.startX;
     const dy = mouse.y - dragState.startY;
     const sc = dragState.startCrop;
-    const display = getCanvasDisplaySize();
+    const display = getTotalDisplaySize();
 
     if (dragState.type === 'move') {
       crop.x = Math.max(0, Math.min(sc.x + dx, display.width - sc.w));
       crop.y = Math.max(0, Math.min(sc.y + dy, display.height - sc.h));
     } else {
       const newCrop = { ...sc };
-
       if (dragState.type.includes('e')) newCrop.w = Math.max(10, sc.w + dx);
       if (dragState.type.includes('w')) { newCrop.x = sc.x + dx; newCrop.w = Math.max(10, sc.w - dx); }
       if (dragState.type.includes('s')) newCrop.h = Math.max(10, sc.h + dy);
@@ -242,7 +378,6 @@
       newCrop.y = Math.max(0, newCrop.y);
       if (newCrop.x + newCrop.w > display.width) newCrop.w = display.width - newCrop.x;
       if (newCrop.y + newCrop.h > display.height) newCrop.h = display.height - newCrop.y;
-
       crop = newCrop;
     }
 
@@ -266,17 +401,33 @@
   }
 
   // ---- Downloads ----
-  document.getElementById('downloadPng').addEventListener('click', () => {
-    const link = document.createElement('a');
-    link.download = `fullsnap-${Date.now()}.png`;
-    link.href = canvas.toDataURL('image/png');
-    link.click();
+  document.getElementById('downloadPng').addEventListener('click', async () => {
+    const result = await renderToBlob('image/png');
+    if (result.blob) {
+      // Single canvas — download directly
+      const url = URL.createObjectURL(result.blob);
+      const link = document.createElement('a');
+      link.download = `fullsnap-${Date.now()}.png`;
+      link.href = url;
+      link.click();
+      URL.revokeObjectURL(url);
+    } else {
+      // Too tall for one canvas — download each tile as a separate PNG
+      for (let i = 0; i < tiles.length; i++) {
+        const blob = await new Promise(r => tiles[i].canvas.toBlob(r, 'image/png'));
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.download = `fullsnap-${Date.now()}-part${i + 1}.png`;
+        link.href = url;
+        link.click();
+        URL.revokeObjectURL(url);
+      }
+    }
   });
 
   document.getElementById('downloadPdf').addEventListener('click', () => {
-    const imgData = canvas.toDataURL('image/jpeg', 0.95);
-    const imgWidth = canvas.width;
-    const imgHeight = canvas.height;
+    const { jsPDF } = window.jspdf;
+    const pdf = new jsPDF('p', 'mm', 'a4');
 
     const pageWidth = 210;
     const pageHeight = 297;
@@ -284,45 +435,63 @@
     const contentWidth = pageWidth - 2 * margin;
     const contentHeight = pageHeight - 2 * margin;
 
-    const scale = contentWidth / imgWidth;
-    const scaledHeight = imgHeight * scale;
-    const { jsPDF } = window.jspdf;
+    const pxPerMm = fullWidth / contentWidth;
+    const pxPerPage = contentHeight * pxPerMm;
 
-    if (scaledHeight <= contentHeight) {
-      const pdf = new jsPDF('p', 'mm', 'a4');
-      pdf.addImage(imgData, 'JPEG', margin, margin, contentWidth, scaledHeight);
-      pdf.save(`fullsnap-${Date.now()}.pdf`);
-    } else {
-      const pdf = new jsPDF('p', 'mm', 'a4');
-      const pixelsPerPage = contentHeight / scale;
-      let remainingHeight = imgHeight;
-      let sourceY = 0;
-      let pageNum = 0;
+    let remainingHeight = fullHeight;
+    let sourceY = 0;
+    let pageNum = 0;
 
-      while (remainingHeight > 0) {
-        if (pageNum > 0) pdf.addPage();
-        const sliceHeight = Math.min(pixelsPerPage, remainingHeight);
-        const tempCanvas = document.createElement('canvas');
-        tempCanvas.width = imgWidth;
-        tempCanvas.height = sliceHeight;
-        const tempCtx = tempCanvas.getContext('2d');
-        tempCtx.drawImage(canvas, 0, sourceY, imgWidth, sliceHeight, 0, 0, imgWidth, sliceHeight);
-        const sliceData = tempCanvas.toDataURL('image/jpeg', 0.95);
-        const sliceScaledHeight = sliceHeight * scale;
-        pdf.addImage(sliceData, 'JPEG', margin, margin, contentWidth, sliceScaledHeight);
-        sourceY += sliceHeight;
-        remainingHeight -= sliceHeight;
-        pageNum++;
+    while (remainingHeight > 0) {
+      if (pageNum > 0) pdf.addPage();
+
+      const sliceH = Math.min(pxPerPage, remainingHeight);
+
+      // Render this slice from tiles into a temp canvas
+      const tempCanvas = document.createElement('canvas');
+      tempCanvas.width = fullWidth;
+      tempCanvas.height = Math.min(sliceH, MAX_TILE_HEIGHT);
+      const tempCtx = tempCanvas.getContext('2d');
+
+      const sliceTop = sourceY;
+      const sliceBottom = sourceY + sliceH;
+
+      for (const tile of tiles) {
+        const tileTop = tile.y;
+        const tileBottom = tile.y + tile.canvas.height;
+
+        if (tileBottom <= sliceTop || tileTop >= sliceBottom) continue;
+
+        const overlapTop = Math.max(sliceTop, tileTop);
+        const overlapBottom = Math.min(sliceBottom, tileBottom);
+        const srcY = overlapTop - tileTop;
+        const srcH = overlapBottom - overlapTop;
+        const destY = overlapTop - sliceTop;
+
+        tempCtx.drawImage(tile.canvas, 0, srcY, fullWidth, srcH, 0, destY, fullWidth, srcH);
       }
 
-      pdf.save(`fullsnap-${Date.now()}.pdf`);
+      const sliceData = tempCanvas.toDataURL('image/jpeg', 0.92);
+      const sliceMmH = (sliceH / fullWidth) * contentWidth;
+      pdf.addImage(sliceData, 'JPEG', margin, margin, contentWidth, sliceMmH);
+
+      sourceY += sliceH;
+      remainingHeight -= sliceH;
+      pageNum++;
     }
+
+    pdf.save(`fullsnap-${Date.now()}.pdf`);
   });
 
   // ---- Copy to Clipboard ----
   document.getElementById('copyBtn').addEventListener('click', async () => {
     try {
-      const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+      const result = await renderToBlob('image/png');
+      let blob = result.blob;
+      if (!blob) {
+        // Too tall — copy just the first tile with a note
+        blob = await new Promise(r => tiles[0].canvas.toBlob(r, 'image/png'));
+      }
       await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
 
       const btn = document.getElementById('copyBtn');
